@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>body{margin:0}</style>
+<title>Pixel Invasion</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap">
+<style>
+/* Layout: one centered cabinet screen, hint line below, thumb controls on touch devices.
+   Single-look dark arcade page by choice: every color is explicit below. */
+:root {
+  --bg: #06080d;
+  --panel: #0d131b;
+  --edge: #1a2633;
+  --ink: #d8ffe8;
+  --dim: #6c7f8f;
+  --green: #5dff9e;
+  --magenta: #ff4fd8;
+  --cyan: #4fd8ff;
+  --amber: #ffc24f;
+  --font: 'Press Start 2P', ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body {
+  box-sizing: border-box;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  overflow-x: hidden;
+}
+canvas {
+  display: block;
+  width: min(100%, 520px, calc((100svh - 150px) * 0.875));
+  aspect-ratio: 448 / 512;
+  max-width: 100%;
+  background: #000;
+  border: 2px solid var(--edge);
+  border-radius: 4px;
+  box-shadow: 0 0 48px rgba(93, 255, 158, 0.10);
+  image-rendering: pixelated;
+  touch-action: none;
+  outline: none;
+}
+.hint {
+  margin: 0;
+  font-size: 8px;
+  line-height: 1.8;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  text-align: center;
+  text-wrap: balance;
+}
+.hint b { color: var(--ink); font-weight: normal; }
+.pad {
+  display: none;
+  width: min(100%, 520px);
+  grid-template-columns: 1fr 1fr 1.6fr;
+  gap: 10px;
+}
+@media (pointer: coarse) { .pad { display: grid; } }
+.pad button {
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--panel);
+  border: 2px solid var(--edge);
+  border-radius: 6px;
+  padding: 18px 0;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.pad button.fire { color: var(--green); border-color: #245a3c; }
+.pad button:active, .pad button.on { background: #17222e; border-color: var(--green); }
+.pad button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+</style>
+
+<canvas id="c" tabindex="0" aria-label="Pixel Invasion game screen"></canvas>
+<p class="hint"><b>◀ ▶</b> or <b>A D</b> move &nbsp; <b>SPACE</b> fire &nbsp; <b>P</b> pause</p>
+<div class="pad" aria-label="Touch controls">
+  <button id="bl" type="button" aria-label="Move left">◀</button>
+  <button id="br" type="button" aria-label="Move right">▶</button>
+  <button id="bf" type="button" class="fire" aria-label="Fire">FIRE</button>
+</div>
+
+<script>
+(() => {
+  const W = 448, H = 512;
+  const cv = document.getElementById('c');
+  const ctx = cv.getContext('2d');
+  cv.width = W; cv.height = H;
+
+  const C = { green: '#5dff9e', magenta: '#ff4fd8', cyan: '#4fd8ff', amber: '#ffc24f',
+              red: '#ff4f5e', ink: '#d8ffe8', dim: '#6c7f8f', star: '#1c2a38' };
+  const FONT = '"Press Start 2P", ui-monospace, Menlo, Consolas, monospace';
+
+  /* ---------- sprites (original designs) ---------- */
+  function rects(rows) {
+    const out = [];
+    rows.forEach((row, y) => {
+      let x = 0;
+      while (x < row.length) {
+        if (row[x] === '#') { const s = x; while (x < row.length && row[x] === '#') x++; out.push([s, y, x - s]); }
+        else x++;
+      }
+    });
+    return out;
+  }
+  const A1 = ["...####...","..######..",".########.","##.####.##","##########","..##..##..",".##.##.##.","##......##"];
+  const A2 = ["...####...","..######..",".########.","##.####.##","##########","..##..##..","..#.##.#..",".#..##..#."];
+  const B1 = ["..#....#..","#..#..#..#","#.######.#","###.##.###","##########",".########.","..#....#..",".#......#."];
+  const B2 = ["..#....#..","...#..#...","..######..",".##.##.##.","##########","#.######.#","#.#....#.#","...#..#..."];
+  const K1 = ["..######..",".########.","##########","###.##.###","##########","..##..##..",".##.##.##.","##..##..##"];
+  const K2 = ["..######..",".########.","##########","###.##.###","##########","...####...","..##..##..","...#..#..."];
+  const CAN = ["......#......",".....###.....",".....###.....",".###########.","#############","#############","#############"];
+  const UFO = [".....######.....","...##########...","..############..",".##.##.##.##.##.","################","..###..##..###..","...#........#..."];
+  const SPR = {
+    inv: [[rects(A1), rects(A2)], [rects(B1), rects(B2)], [rects(K1), rects(K2)]],
+    can: rects(CAN), ufo: rects(UFO)
+  };
+  const INV_COL = [C.amber, C.cyan, C.magenta];
+  const INV_PTS = [10, 20, 30];
+  const SC = 2, IW = 20, IH = 16, PW = 26, PH = 14, UW = 32, UH = 14;
+
+  function drawSpr(sp, x, y, sc, col) {
+    ctx.fillStyle = col;
+    for (const [rx, ry, rw] of sp) ctx.fillRect(Math.round(x + rx * sc), Math.round(y + ry * sc), rw * sc, sc);
+  }
+
+  /* ---------- layout constants ---------- */
+  const GROUND = H - 30;
+  const PY = GROUND - 4 - PH;
+  const CELL = 3, SWc = 22, SHr = 16;
+  const SHIELD_Y = H - 134;
+
+  /* ---------- state ---------- */
+  let state = 'title';          // title | play | clear | over
+  let paused = false;
+  let score = 0, hi = 0, lives = 3, level = 1, nextLife = 1500;
+  try { hi = +localStorage.getItem('pixel-invasion-hi') || 0; } catch (e) {}
+  let inv = [], dir = 1, stepT = 0, frame = 0, march = 0, aliveN = 0;
+  const player = { x: W / 2 - PW / 2, alive: true, rt: 0, inv: 0 };
+  let pb = null, eb = [], shields = [], parts = [], pops = [];
+  let ufo = null, ufoT = 16, fireT = 1.2, clearT = 0, overT = 0, clock = 0, ufoBeep = 0;
+  const keys = { left: false, right: false, fire: false };
+  const stars = Array.from({ length: 60 }, () => [Math.random() * W | 0, 44 + Math.random() * (GROUND - 50) | 0, Math.random() < 0.2 ? 2 : 1]);
+
+  /* ---------- audio ---------- */
+  let ac = null;
+  function ensureAudio() {
+    try {
+      if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
+      if (ac.state === 'suspended') ac.resume();
+    } catch (e) { ac = null; }
+  }
+  function tone(f, d, type, v, slideTo) {
+    if (!ac) return;
+    try {
+      const o = ac.createOscillator(), g = ac.createGain(), t = ac.currentTime;
+      o.type = type || 'square';
+      o.frequency.setValueAtTime(f, t);
+      if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + d);
+      g.gain.setValueAtTime(v || 0.04, t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+      o.connect(g); g.connect(ac.destination);
+      o.start(t); o.stop(t + d + 0.02);
+    } catch (e) {}
+  }
+  function noise(d, v) {
+    if (!ac) return;
+    try {
+      const n = Math.floor(ac.sampleRate * d), buf = ac.createBuffer(1, n, ac.sampleRate), data = buf.getChannelData(0);
+      for (let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / n);
+      const s = ac.createBufferSource(), g = ac.createGain();
+      s.buffer = buf; g.gain.value = v || 0.08;
+      s.connect(g); g.connect(ac.destination); s.start();
+    } catch (e) {}
+  }
+
+  /* ---------- setup ---------- */
+  function makeShields() {
+    shields = [];
+    for (let i = 0; i < 4; i++) {
+      const cx = W * (i + 0.5) / 4;
+      const g = new Uint8Array(SWc * SHr);
+      for (let r = 0; r < SHr; r++) for (let c = 0; c < SWc; c++) {
+        let on = true;
+        if (r < 4 && (c < 4 - r || c > SWc - 1 - (4 - r))) on = false;
+        if (r >= 11 && c >= 7 && c <= 14) on = false;
+        if (r >= 13 && c >= 5 && c <= 16) on = false;
+        g[r * SWc + c] = on ? 1 : 0;
+      }
+      shields.push({ x: Math.round(cx - SWc * CELL / 2), y: SHIELD_Y, g });
+    }
+  }
+  function initLevel() {
+    inv = [];
+    const types = [2, 1, 1, 0, 0];
+    const drop = Math.min(level - 1, 5) * 8;
+    for (let r = 0; r < 5; r++) for (let c = 0; c < 10; c++)
+      inv.push({ x: 36 + c * 34, y: 84 + r * 28 + drop, t: types[r], r, c, alive: true });
+    aliveN = inv.length; dir = 1; frame = 0; stepT = 0.4;
+    pb = null; eb = []; ufo = null; ufoT = 14 + Math.random() * 8; fireT = 1.4;
+    makeShields();
+  }
+  function newGame() {
+    score = 0; lives = 3; level = 1; nextLife = 1500; parts = []; pops = [];
+    player.x = W / 2 - PW / 2; player.alive = true; player.inv = 1; player.rt = 0;
+    initLevel(); state = 'play'; paused = false;
+  }
+  function endGame() {
+    state = 'over';
+    if (score > hi) { hi = score; try { localStorage.setItem('pixel-invasion-hi', String(hi)); } catch (e) {} }
+  }
+
+  /* ---------- helpers ---------- */
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  function spark(x, y, col, n, spd) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2, s = (spd || 90) * (0.3 + Math.random());
+      parts.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.35 + Math.random() * 0.35, col });
+    }
+  }
+  function addScore(p) {
+    score += p;
+    while (score >= nextLife) { lives = Math.min(lives + 1, 6); nextLife += 1500; tone(880, 0.25, 'triangle', 0.05, 1760); }
+  }
+  function erodeAt(x, y, r) {
+    for (const s of shields) {
+      const cx = Math.floor((x - s.x) / CELL), cy = Math.floor((y - s.y) / CELL);
+      if (cx < 0 || cy < 0 || cx >= SWc || cy >= SHr || !s.g[cy * SWc + cx]) continue;
+      for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+        const d = dx * dx + dy * dy;
+        if (d > r * r + 1) continue;
+        if (d >= r * r && Math.random() < 0.3) continue;
+        const px = cx + dx, py = cy + dy;
+        if (px >= 0 && py >= 0 && px < SWc && py < SHr) s.g[py * SWc + px] = 0;
+      }
+      return true;
+    }
+    return false;
+  }
+  function clearShieldRect(rx, ry, rw, rh) {
+    for (const s of shields) {
+      const x0 = Math.max(0, Math.floor((rx - s.x) / CELL)), x1 = Math.min(SWc - 1, Math.floor((rx + rw - s.x) / CELL));
+      const y0 = Math.max(0, Math.floor((ry - s.y) / CELL)), y1 = Math.min(SHr - 1, Math.floor((ry + rh - s.y) / CELL));
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) s.g[y * SWc + x] = 0;
+    }
+  }
+  function killInvader(i) {
+    i.alive = false; aliveN--;
+    addScore(INV_PTS[i.t]);
+    spark(i.x + IW / 2, i.y + IH / 2, INV_COL[i.t], 12, 110);
+    noise(0.12, 0.07); tone(220, 0.1, 'square', 0.04, 80);
+  }
+  function hitPlayer() {
+    if (!player.alive) return;
+    player.alive = false; lives--; player.rt = 1.5;
+    spark(player.x + PW / 2, PY + PH / 2, C.green, 26, 140);
+    noise(0.5, 0.12); tone(160, 0.5, 'sawtooth', 0.05, 40);
+    eb = []; pb = null;
+    if (lives <= 0) overT = 1.6;
+  }
+  function fire() {
+    pb = { x: player.x + PW / 2, y: PY - 2 };
+    tone(900, 0.12, 'square', 0.035, 250);
+  }
+  function stepInterval() {
+    const v = 0.04 + (aliveN / 50) * 0.62;
+    return Math.max(0.036, (v * 1.2) / (1 + 0.07 * (level - 1)));
+  }
+  function stepInv() {
+    let minX = 1e9, maxX = -1e9, maxY = 0;
+    for (const i of inv) if (i.alive) { minX = Math.min(minX, i.x); maxX = Math.max(maxX, i.x + IW); maxY = Math.max(maxY, i.y + IH); }
+    if ((dir > 0 && maxX + 4 > W - 8) || (dir < 0 && minX - 4 < 8)) {
+      for (const i of inv) i.y += 12;
+      dir = -dir; maxY += 12;
+    } else {
+      for (const i of inv) i.x += dir * 4;
+    }
+    frame ^= 1;
+    for (const i of inv) if (i.alive) clearShieldRect(i.x, i.y, IW, IH);
+    const notes = [110, 98, 87, 82];
+    tone(notes[march++ & 3], 0.09, 'square', 0.05);
+    if (maxY >= PY && player.alive) { lives = 1; hitPlayer(); overT = 1.0; }
+  }
+  function enemyFire() {
+    const cols = [];
+    for (let c = 0; c < 10; c++) for (let r = 4; r >= 0; r--) {
+      const i = inv[r * 10 + c];
+      if (i.alive) { cols.push(i); break; }
+    }
+    if (!cols.length) return;
+    const s = cols[Math.random() * cols.length | 0];
+    eb.push({ x: s.x + IW / 2, y: s.y + IH, t: 0 });
+    tone(300, 0.1, 'sawtooth', 0.025, 150);
+  }
+
+  /* ---------- update ---------- */
+  function updateParts(dt) {
+    for (const p of parts) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
+    parts = parts.filter(p => p.life > 0);
+    for (const p of pops) { p.t -= dt; p.y -= 14 * dt; }
+    pops = pops.filter(p => p.t > 0);
+  }
+  function checkPB() {
+    for (const i of inv) {
+      if (i.alive && pb.x >= i.x && pb.x <= i.x + IW && pb.y >= i.y && pb.y <= i.y + IH) { killInvader(i); pb = null; return true; }
+    }
+    if (ufo && pb.x >= ufo.x && pb.x <= ufo.x + UW && pb.y >= ufo.y && pb.y <= ufo.y + UH) {
+      const pts = [50, 100, 100, 150, 300][Math.random() * 5 | 0];
+      addScore(pts);
+      pops.push({ x: ufo.x + UW / 2, y: ufo.y, t: 1.1, txt: String(pts) });
+      spark(ufo.x + UW / 2, ufo.y + UH / 2, C.red, 22, 130);
+      noise(0.4, 0.1); tone(700, 0.35, 'triangle', 0.05, 90);
+      ufo = null; pb = null; return true;
+    }
+    for (let k = 0; k < eb.length; k++) {
+      if (Math.abs(eb[k].x - pb.x) < 4 && Math.abs(eb[k].y + 4 - pb.y) < 9) {
+        spark(eb[k].x, eb[k].y, C.ink, 5, 60); eb.splice(k, 1); pb = null; return true;
+      }
+    }
+    if (erodeAt(pb.x, pb.y, 1)) { pb = null; return true; }
+    return false;
+  }
+  function update(dt) {
+    clock += dt;
+    if (state === 'title' || state === 'over') { updateParts(dt); return; }
+    if (paused) return;
+    updateParts(dt);
+    if (state === 'clear') {
+      clearT -= dt;
+      if (clearT <= 0) { level++; initLevel(); state = 'play'; player.inv = 1; }
+      return;
+    }
+    /* player */
+    if (player.alive) {
+      const mv = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+      player.x = clamp(player.x + mv * 240 * dt, 8, W - 8 - PW);
+      if (keys.fire && !pb) fire();
+      player.inv = Math.max(0, player.inv - dt);
+    } else if (lives > 0) {
+      player.rt -= dt;
+      if (player.rt <= 0) { player.alive = true; player.inv = 1.8; player.x = W / 2 - PW / 2; }
+    } else {
+      overT -= dt;
+      if (overT <= 0) { endGame(); return; }
+    }
+    /* player bullet */
+    if (pb) {
+      const dist = 470 * dt, n = Math.ceil(dist / 3);
+      let hit = false;
+      for (let k = 0; k < n && !hit; k++) { pb.y -= dist / n; hit = checkPB(); }
+      if (!hit && pb && pb.y < 40) { spark(pb.x, 42, C.green, 5, 60); pb = null; }
+    }
+    /* invaders */
+    stepT -= dt;
+    if (stepT <= 0) { stepInv(); stepT = stepInterval(); }
+    fireT -= dt;
+    if (fireT <= 0 && eb.length < 2 + Math.min(level, 3)) {
+      enemyFire();
+      fireT = Math.max(0.28, 1.2 - level * 0.05 - (50 - aliveN) * 0.006) * (0.5 + Math.random());
+    }
+    /* enemy bullets */
+    for (let k = eb.length - 1; k >= 0; k--) {
+      const b = eb[k];
+      b.y += (120 + level * 7) * dt; b.t += dt;
+      if (erodeAt(b.x, b.y + 8, 2)) { spark(b.x, b.y + 8, C.green, 4, 50); eb.splice(k, 1); continue; }
+      if (player.alive && player.inv <= 0 && b.x >= player.x && b.x <= player.x + PW && b.y + 8 >= PY && b.y <= PY + PH) {
+        hitPlayer(); break;
+      }
+      if (b.y + 8 >= GROUND) { spark(b.x, GROUND, C.ink, 5, 60); eb.splice(k, 1); }
+    }
+    /* saucer */
+    if (ufo) {
+      ufo.x += ufo.v * dt;
+      ufoBeep -= dt;
+      if (ufoBeep <= 0) { tone(ufo.hi ? 520 : 440, 0.07, 'square', 0.02); ufo.hi = !ufo.hi; ufoBeep = 0.09; }
+      if (ufo.x > W + 8 || ufo.x < -UW - 8) ufo = null;
+    } else {
+      ufoT -= dt;
+      if (ufoT <= 0 && aliveN >= 8) {
+        const left = Math.random() < 0.5;
+        ufo = { x: left ? -UW : W, y: 50, v: left ? 85 : -85, hi: false };
+        ufoT = 18 + Math.random() * 14;
+      }
+    }
+    /* wave cleared */
+    if (aliveN <= 0 && state === 'play') {
+      state = 'clear'; clearT = 1.8; pb = null; eb = [];
+      tone(523, 0.12, 'square', 0.04); setTimeout(() => tone(659, 0.12, 'square', 0.04), 120);
+      setTimeout(() => tone(784, 0.2, 'square', 0.04), 240);
+    }
+  }
+
+  /* ---------- drawing ---------- */
+  function txt(s, x, y, size, col, align) {
+    ctx.font = size + 'px ' + FONT; ctx.fillStyle = col; ctx.textAlign = align || 'left'; ctx.textBaseline = 'alphabetic';
+    ctx.fillText(s, x, y);
+  }
+  const pad5 = n => String(n).padStart(5, '0');
+
+  function drawShields() {
+    ctx.fillStyle = C.green;
+    for (const s of shields) for (let r = 0; r < SHr; r++) for (let c = 0; c < SWc; c++)
+      if (s.g[r * SWc + c]) ctx.fillRect(s.x + c * CELL, s.y + r * CELL, CELL, CELL);
+  }
+  function drawHUD() {
+    txt('SCORE', 16, 22, 8, C.dim); txt(pad5(score), 16, 38, 10, C.ink);
+    txt('HI-SCORE', W / 2, 22, 8, C.dim, 'center'); txt(pad5(hi), W / 2, 38, 10, C.amber, 'center');
+    txt('LEVEL', W - 16, 22, 8, C.dim, 'right'); txt(String(level), W - 16, 38, 10, C.ink, 'right');
+    ctx.fillStyle = C.green; ctx.fillRect(0, GROUND, W, 2);
+    txt(String(Math.max(lives, 0)), 16, H - 8, 10, C.ink);
+    for (let i = 0; i < Math.max(lives - 1, 0); i++) drawSpr(SPR.can, 40 + i * 20, H - 18, 1, C.green);
+  }
+  function drawWorld() {
+    ctx.fillStyle = C.star;
+    for (const s of stars) ctx.fillRect(s[0], s[1], s[2], s[2]);
+    drawShields();
+    for (const i of inv) if (i.alive) drawSpr(SPR.inv[i.t][frame], i.x, i.y, SC, INV_COL[i.t]);
+    if (ufo) drawSpr(SPR.ufo, ufo.x, ufo.y, SC, C.red);
+    if (player.alive && (player.inv <= 0 || Math.floor(clock * 12) % 2 === 0)) drawSpr(SPR.can, player.x, PY, SC, C.green);
+    if (pb) { ctx.fillStyle = C.ink; ctx.fillRect(Math.round(pb.x) - 1, Math.round(pb.y), 2, 10); }
+    for (const b of eb) {
+      ctx.fillStyle = C.ink;
+      const z = Math.floor(b.t * 14) % 2 ? 1 : -1;
+      ctx.fillRect(Math.round(b.x) - 1 + z, Math.round(b.y), 2, 3);
+      ctx.fillRect(Math.round(b.x) - 1 - z, Math.round(b.y) + 3, 2, 3);
+      ctx.fillRect(Math.round(b.x) - 1 + z, Math.round(b.y) + 6, 2, 3);
+    }
+    for (const p of parts) { ctx.globalAlpha = clamp(p.life * 2.5, 0, 1); ctx.fillStyle = p.col; ctx.fillRect(Math.round(p.x), Math.round(p.y), 2, 2); }
+    ctx.globalAlpha = 1;
+    for (const p of pops) txt(p.txt, p.x, p.y, 8, C.red, 'center');
+    drawHUD();
+  }
+  function drawTitle() {
+    txt('PIXEL', W / 2, 140, 30, C.green, 'center');
+    txt('INVASION', W / 2, 184, 30, C.green, 'center');
+    txt('SCORE ADVANCE TABLE', W / 2, 250, 8, C.dim, 'center');
+    const rows = [[SPR.ufo, UW, UH, C.red, '= ? MYSTERY'], [SPR.inv[2][0], IW, IH, C.magenta, '= 30 PTS'],
+                  [SPR.inv[1][0], IW, IH, C.cyan, '= 20 PTS'], [SPR.inv[0][0], IW, IH, C.amber, '= 10 PTS']];
+    rows.forEach((r, k) => {
+      const y = 272 + k * 30;
+      drawSpr(r[0], 132 + (UW - r[1]) / 2, y, SC, r[3]);
+      txt(r[4], 182, y + 12, 9, C.ink);
+    });
+    if (Math.floor(clock * 2) % 2 === 0) txt('PRESS ENTER OR TAP TO START', W / 2, 438, 9, C.amber, 'center');
+    txt('HI-SCORE ' + pad5(hi), W / 2, 470, 8, C.dim, 'center');
+  }
+  function overlay(title, col, sub) {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, 150, W, 150);
+    txt(title, W / 2, 210, 22, col, 'center');
+    if (sub) txt(sub, W / 2, 246, 9, C.ink, 'center');
+  }
+  function render() {
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+    if (state === 'title') { drawTitle(); return; }
+    drawWorld();
+    if (state === 'clear') overlay('WAVE CLEARED', C.green, 'GET READY FOR LEVEL ' + (level + 1));
+    if (state === 'over') {
+      overlay('GAME OVER', C.red, 'SCORE ' + pad5(score) + (score >= hi && score > 0 ? '  NEW HIGH!' : ''));
+      if (Math.floor(clock * 2) % 2 === 0) txt('PRESS ENTER TO RETRY', W / 2, 282, 8, C.amber, 'center');
+    }
+    if (paused) overlay('PAUSED', C.amber, 'PRESS P TO RESUME');
+  }
+
+  /* ---------- input ---------- */
+  function startIfIdle() {
+    if (state === 'title' || state === 'over') { ensureAudio(); newGame(); return true; }
+    return false;
+  }
+  window.addEventListener('keydown', e => {
+    const k = e.code;
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space'].includes(k)) e.preventDefault();
+    ensureAudio();
+    if (k === 'ArrowLeft' || k === 'KeyA') keys.left = true;
+    else if (k === 'ArrowRight' || k === 'KeyD') keys.right = true;
+    else if (k === 'Space' || k === 'ArrowUp' || k === 'KeyW') { if (!startIfIdle()) keys.fire = true; }
+    else if (k === 'Enter') startIfIdle();
+    else if ((k === 'KeyP' || k === 'Escape') && state === 'play') paused = !paused;
+  });
+  window.addEventListener('keyup', e => {
+    const k = e.code;
+    if (k === 'ArrowLeft' || k === 'KeyA') keys.left = false;
+    else if (k === 'ArrowRight' || k === 'KeyD') keys.right = false;
+    else if (k === 'Space' || k === 'ArrowUp' || k === 'KeyW') keys.fire = false;
+  });
+  window.addEventListener('blur', () => { keys.left = keys.right = keys.fire = false; if (state === 'play') paused = true; });
+  document.addEventListener('visibilitychange', () => { if (document.hidden && state === 'play') paused = true; });
+  cv.addEventListener('pointerdown', () => {
+    cv.focus();
+    if (!startIfIdle() && paused) paused = false;
+  });
+  function hold(id, key) {
+    const b = document.getElementById(id);
+    const on = e => { e.preventDefault(); ensureAudio(); if (key === 'fire' && startIfIdle()) return; if (paused) paused = false; keys[key] = true; b.classList.add('on'); };
+    const off = () => { keys[key] = false; b.classList.remove('on'); };
+    b.addEventListener('pointerdown', on);
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => b.addEventListener(t, off));
+    b.addEventListener('contextmenu', e => e.preventDefault());
+  }
+  hold('bl', 'left'); hold('br', 'right'); hold('bf', 'fire');
+
+  /* ---------- loop ---------- */
+  initLevel(); state = 'title';
+  try { document.fonts && document.fonts.load('12px "Press Start 2P"'); } catch (e) {}
+  let last = performance.now();
+  function loop(now) {
+    const dt = Math.min(0.05, (now - last) / 1000); last = now;
+    update(dt); render();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+
+</html>
